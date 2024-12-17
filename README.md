@@ -37,7 +37,7 @@ The dataset includes:
   ![Top affected groups](graphs/WechatIMG147.jpg)
  
 - **State-Specific Challenges**:
-   - States like **Alaska, Connecticut, Minnesota, Nerbraska**, and **Washington** face high absenteeism rates among specific racial groups.
+   States like **Alaska, Connecticut, Minnesota, Nerbraska**, and **Washington** face high absenteeism rates among specific racial groups.
 - **Gender Impact**:  
    Gender showed **no significant effect** on absenteeism rates.
 - **Statistical Insights**:  
