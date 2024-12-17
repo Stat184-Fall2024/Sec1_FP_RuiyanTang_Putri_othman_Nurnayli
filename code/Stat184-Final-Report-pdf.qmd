@@ -1,0 +1,849 @@
+---
+title: "STAT184 Final Report\n--\nSome insights on Student absenteeism problem"
+author: "Ruiyan Tang, Putri Othman, Nurnayli"
+date: "`r Sys.Date()`"
+format: pdf
+editor: visual
+execute:
+  warning: false
+---
+
+\newpage
+
+## Introduction
+
+Nowadays, excessive absenteeism is becoming soaring problem, and can have significant negative effects on students. Academically, frequent absences create learning gaps, resulting in lower grades and reduced participation in classroom activities. Over time, this isolation can also lead to disengagement, behavioral issues, and even an increased likelihood of dropping out of school. In the long term, chronic absenteeism can limit career opportunities and personal growth, creating challenges even after their graduation.
+
+To better understand this issue, we explored the causes of absenteeism and identified which groups of students are most affected. By analyzing this dataset, we aim to uncover patterns and insights to help address this growing concern effectively.
+
+## Part1: Data and environment preparation
+
+We are about to do data preparation work in this section. We will talk about the raw data after data cleaning work and include a screen shot and short description of it.
+
+```{r}
+#| label: Package-loading
+#| include: false
+
+#Load packages
+library(tidyr)
+library(dplyr)
+library(rvest)
+#install.packages("readxl")
+library(readxl)
+#install.packages("openxlsx") 
+library(openxlsx)
+library(ggplot2)
+#install.packages('stargazer')
+library(stargazer)
+```
+
+```{r}
+#| label: Data-loading
+#| echo: false
+
+#Read data from xlsx files
+raw_data_total = read_excel('chronic-absenteeism-1.xlsx', sheet = 'Total')
+raw_data_m = read_excel('chronic-absenteeism-1.xlsx', sheet = 'Male')
+raw_data_f = read_excel('chronic-absenteeism-1.xlsx', sheet = 'Female')
+```
+
+### Data description
+
+The full version of raw data is too big to be displayed here in the report, and can be downloaded and viewed in the data folder of the repository. [*Click here to see the source webpage for more detailed info on data.gov*](https://catalog.data.gov/dataset/student-absenteeism-b0fcc)
+
+The raw data file contains **three** sheets, standing for **total data, female and male student group**.
+
+Each cell represents the number and percentage of public school students absent 15 or more school days during the school year from a specific student group(by race/ethnicity, disability status, and ELL status).
+
+```{r}
+#| label: Data-prep-function
+#| echo: false
+
+#Write a function for data preparation. There are three tables in the same format, so it can be simply repeatedly used on both female and male tables.
+clean_data_function = function(x = raw_data_total){
+data_T = as.data.frame(t(x[1:56,2:25]))
+
+row.names(data_T) = c(1:nrow(data_T))
+
+#Set the column name for the dataframe
+data_T = data_T[,-1]
+data_T[1,3] = 'Data_sort'
+data_T[2,3] = 'Number'
+names(data_T) = data_T[1,] #Set the name as read and fixed above
+data_T = data_T[-1,] #Remove the repeated first row
+
+#Combine values in two columns
+for (i in 1:15) {
+  data_T[i,1] = data_T[i,2]
+}
+
+#Remove number of schools reporting and their percentage, because we don't think subtle difference after 3rd digit matters
+data_T = data_T[1:21,-2]
+
+names(data_T)[1] = 'Class_all' 
+data_T[1,1] = 'Total_student' #Fix missing values
+data_T = rbind(data_T[-1, ], data_T[1, ]) #Move the first total row to the last row
+
+rownames(data_T) = NULL #Reset index
+
+#Convert values from different state to different row, and move values from the same state to a row (percent and number)
+data_clean = data_T %>%
+  fill(Class_all, .direction = "down") %>%
+  pivot_longer(
+    cols = -c('Class_all','Data_sort'),
+    names_to = 'State',
+    values_to = 'Value'
+    ) %>%
+  pivot_wider(
+    names_from = 'Data_sort',
+    values_from = 'Value'
+  ) %>%
+  mutate(across(Percent, ~ifelse(is.na(.), 100, .)))
+
+#Remove the rows representing values other than the state
+data_clean = data_clean[data_clean$Class_all != 'Students With Disabilities Served Under IDEA' & data_clean$Class_all != 'Students With Disabilities Served Only Under Section 504' & data_clean$Class_all != 'English Language Learners',]
+return(data_clean)
+}
+
+```
+
+```{r}
+#| label: Data-application
+#| echo: false
+
+#Apply above function to three dataframes
+clean_total = clean_data_function(raw_data_total)
+clean_f = clean_data_function(raw_data_f)
+clean_m = clean_data_function(raw_data_m)
+
+#Write a function for data-type convertion for future regression
+mutate_fun = function(x = clean_total){
+  data_mttd = x %>%
+    mutate(across(c(Class_all, State), factor)) %>%
+    mutate(across(c(Number, Percent), as.numeric)) %>%
+    mutate(across(everything(), ~replace_na(., 0)))
+}
+
+#Apply above function to three cleaned dataframes
+clean_total = mutate_fun(clean_total)
+clean_f = mutate_fun(clean_f)
+clean_m = mutate_fun(clean_m)
+```
+
+After data selection and cleaning work, three sheets have been split into three data frames(shown on the following page), each contains four columns:
+
+1.  Class_all: Student group (Race or ethnicity);
+
+2.  State: Region (State);
+
+3.  Number: Absolute number of public school students absent 15 or more school days during the school year;
+
+4.  Percentage: Percentage of public school students in this region absent 15 or more school days during the school year (All the school student as 100%).
+
+```{r}
+#| label: Data-display
+#| echo: false
+
+#Check dataframe by looking at first several rows
+head(clean_total,5)
+head(clean_f,5)
+head(clean_m,5)
+```
+
+### Study Goal
+
+Finding out probable connection between absence rate(Percentage) and other factors, including gender, region and race. \newpage
+
+## Part2: Data visualization
+
+### For The whole United States
+
+After hard data cleaning work, here goes our data visualization. We are planning to first draw a bar chart for the whole United States to see severance of different student groups.
+
+To see which group of students is likely to be absent, the absolute number is less meaningful, so we will continue to mainly focus on percentage. As original data on percentage are calculated base on single states(or the whole US) instead of based on the student group in that state, this will cause the percentage severely affected by the racial structure in that state. So we decided that total data should be adjusted first using their racial percentage in population as a baseline, which means every original value will be divided by corresponding value of that race's presence rate in the whole US.
+
+This method can also be applied to every single state's data if there's reachable racial data for every single state. We can save it for future study.
+
+```{r, fig.width=10, fig.height=7}
+#| label: Data-visualization
+#| echo: false
+
+#Input data manually for every population group into a dataset
+race_ratio = data.frame(
+  Race = unique(clean_total$Class_all)[1:7],
+  Percent = c(0.7, 5.9, 18.9, 12.6, 59.3, 0.2, 2.3)
+)
+
+data_US = clean_total[clean_total$State == 'United States',][1:7,]
+
+data_US$Percent_adj = data_US$Percent/race_ratio$Percent
+#The adjusted percentage greater than 1 means this group has bigger likelihood of absence, so we can get an overview
+
+#Draw a bar chart
+ggplot(data_US, aes(x = Class_all, y = Percent_adj, fill = Percent_adj > 1)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("dark green", "skyblue"), 
+                    labels = c("Less Likely to be absent", "More Likely to be absent")) +  
+  labs(title = "How many times greater a student is likely to absent more than 15 days than average level",
+       x = "Races & Ethnicity", 
+       y = "% in total absent students/\n% in total population") +
+  geom_hline(yintercept = 1, linetype = "dotted", color = "black", linewidth = 0.5) +  
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.y = element_text(angle = 0, vjust = 0.5))
+#Asian has the lowest absent likelihood, then follows white people. All other groups of students are more likely to be absent.
+
+```
+
+### For every single student group(Race & ethnicity)
+
+We are planning to get ten highest rate of absence(\>15 days) for every students group, and ten states this racial group is mostly living in for comparison.
+
+```{r}
+#| label: Data-visualization-function
+#| echo: false
+
+#Now we are going to look into every single race group
+graph_fun = function(x = 'American Indian or Alaska Native', y = 10){
+#Filter to get the group we are about to analysis, Natives by default in this case
+  data_all = clean_total[clean_total$Class_all == x,]
+  data_f = clean_f[clean_total$Class_all == x,]
+  data_m = clean_m[clean_total$Class_all == x,]
+  
+#Fill in values for sex column for future plot drawing  
+  data_all$sex = rep('Total', nrow(data_all))
+  data_f$sex = rep('female', nrow(data_f))
+  data_m$sex = rep('male', nrow(data_m))
+  
+#Arrange datasets based on Percent, leave top 10 states, the number can also be altered by setting parameter y
+   data_all = data_all %>% 
+    arrange(desc(Percent)) %>%
+    slice_head(n = y)
+  data_f = data_f %>% 
+    arrange(desc(Percent)) %>%
+    slice_head(n = y)
+  data_m = data_m %>% 
+    arrange(desc(Percent)) %>%
+    slice_head(n = y)
+  
+#Combine those three datasets  
+  data = rbind(data_all, data_f, data_m)
+  
+#Set the sequence of top 10 states, or R will set them by the alphabet
+  data$State <- factor(data$State, levels = unique(data$State))
+
+#Draw the Bar chart using facet_wrap helper to put Total, Female & Male data in one harmonic plot
+  plot = ggplot(data, aes(x = State, y = Percent, fill = sex)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ sex, scales = "free", nrow = 3) + 
+#The parameter 'scales' enable different different arrangement of x value
+  labs(title = paste("Top 10 states in Absent rate of", x),
+       x = "State",
+       y = "Absent Rate") +
+  scale_fill_brewer(palette = "Set3")
+
+#Return final value  
+  return(plot)
+}
+
+```
+
+#### **1. Native Americans and Alaska Natives**
+
+```{r, fig.width=12, fig.height=6}
+#| label: Natives
+#| echo: false
+
+graph_fun(x = 'American Indian or\nAlaska Native')
+
+```
+
+The rank after the arrow represent the rank in absence rate. Lowering rank means lower rate of absence, while higher rank means higher absence rate. For example, the states bearing potential problem for this group of student: South Dakota, North Dakota, Oklahoma, Wyoming, Minnesota, Nebraska
+
+1.  Alaska → 2
+
+2.  New Mexico → 7
+
+3.  South Dakota → 1
+
+4.  Montana → 4
+
+5.  North Dakota → 3
+
+6.  Oklahoma → 5
+
+7.  Arizona → 8
+
+8.  Wyoming → 6
+
+9.  Nevada → Na
+
+10. Utah → Na
+
+#### **2. Black or African Americans**
+
+```{r, fig.width=12, fig.height=8}
+#| label: Black or African American
+#| echo: false
+
+graph_fun(x = 'Black or African American')
+
+```
+
+1.  D. C. → 1
+2.  Mississippi → 3
+3.  Louisiana → 2
+4.  Georgia → 6
+5.  Maryland → 4
+6.  South Carolina → 8
+7.  Alabama → 10
+8.  Delaware → 7
+9.  North Carolina → Na
+10. Virginia → Na
+
+The states bearing potential problem for this group of student: Louisiana, Maryland, Delaware, North Carolina, Tennessee, Michigan \newpage
+
+#### **3. Hispanic or Latino**
+
+```{r, fig.width=12, fig.height=8}
+#| label: Hispanic or Latino
+#| echo: false
+
+graph_fun(x = 'Hispanic or Latino of any race')
+
+```
+
+1.  New Mexico → 1
+2.  California → 2
+3.  Texas → 3
+4.  Arizona → 4
+5.  Nevada → 6
+6.  Colorado → 5
+7.  Florida → 8
+8.  New Jersey → Na
+9.  New York → Na
+10. Illinois → Na
+
+The states bearing potential problem for this group of student: Colorado, Rhode Island, Massachusetts, Connecticut \newpage
+
+#### **4. Asian**
+
+```{r, fig.width=12, fig.height=8}
+#| label: Asian
+#| echo: false
+
+graph_fun(x = 'Asian')
+
+```
+
+1.  Hawaii → 1
+2.  California → 4
+3.  New Jersey → 2
+4.  New York → Na
+5.  Nevada → Na
+6.  Washington → 8
+7.  Massachusetts → 9
+8.  Maryland → 10
+9.  Illinois → Na
+10. Virginia → 7
+
+The states bearing potential problem for this group of student: New Jersey, Virginia, Connecticut, Minnesota, Alaska \newpage
+
+#### **5. White**
+
+```{r, fig.width=12, fig.height=8}
+#| label: White
+#| echo: false
+
+graph_fun(x = 'White')
+
+```
+
+1.  Maine → 3
+2.  Vermont → 1
+3.  West Virginia → 2
+4.  New Hampshire → 4
+5.  Idaho → 6
+6.  Montana → 7
+7.  Wyoming → 10
+8.  Iowa → 9
+9.  North Dakota → Na
+10. South Dakota → Na
+
+The states bearing potential problem for this group of student: Vermont, West Virginia, Kentucky, Utah \newpage
+
+#### **6.** Native Hawaiian or Other Pacific Islander
+
+```{r, fig.width=12, fig.height=8}
+#| label: Pacific Islanders
+#| echo: false
+
+graph_fun(x = 'Native Hawaiian or Other Pacific Islander')
+
+```
+
+1.  Hawaii → 1
+2.  Utah → 3
+3.  Nevada → 5
+4.  Alaska → 2
+5.  Washington → 4
+6.  California → 8
+7.  Oregon → 7
+8.  Arizona → 10
+9.  Texas → Na
+10. Florida → Na
+
+The states bearing potential problem for this group of student: Alaska, Washington, Arkansas \newpage
+
+#### **7. Two or More Races**
+
+```{r, fig.width=12, fig.height=8}
+#| label: Two or More Races
+#| echo: false
+
+graph_fun(x = 'Two or more races')
+
+```
+
+1.  Hawaii → 1
+2.  Alaska → 2
+3.  Oklahoma → 4
+4.  Oregon → 5
+5.  Washington → 3
+6.  Nevada → 7
+7.  California → Na
+8.  New Mexico → Na
+9.  Arizona → Na
+10. Colorado → Na
+
+The states bearing potential problem for this group of student: Washington, Kansas, Indiana, Ohio, Nebraska. \newpage
+
+#### **Data Visualization Overview**
+
+Now a list of states that might be in challenging situation for each student group can be listed:
+
+-   Native Americans and Alaska Natives
+
+    -   South Dakota, North Dakota, Oklahoma, Wyoming, Minnesota, Nebraska
+
+-   Black or African Americans
+
+    -   Louisiana, Maryland, Delaware, North Carolina, Tennessee, Michigan
+
+-   Hispanic or Latino
+
+    -   Colorado, Rhode Island, Massachusetts, Connecticut
+
+-   Asian
+
+    -   New Jersey, Virginia, Connecticut, Minnesota, Alaska
+
+-   White
+
+    -   Vermont, West Virginia, Kentucky, Utah
+
+-   Native Hawaiian or other Pacific Islander
+
+    -   Alaska, Washington, Arkansas
+
+-   Two or more Races
+
+    -   Washington, Kansas, Indiana, Ohio, Nebraska.
+
+Some states appear more than once in this list. They are Alaska(2), Connecticut(2), Minnesota(2), Nebraska(2), Washington(2). These states better take action to resolve this.
+
+Also, We can see that there's no significant difference between two genders. \newpage
+
+## Part 3: Simple regression models
+
+First, prepare the data, add a column to represent sex.
+
+```{r}
+#| label: Regression-data-prep
+#| echo: false
+
+#Exclude the agg rows
+data_lm_f = clean_f[clean_f$Class_all != 'Total_student',]
+data_lm_m = clean_m[clean_m$Class_all != 'Total_student',]
+
+#Fill in 'sex' columns
+data_lm_f$sex = as.factor(rep('female', nrow(data_lm_f)))
+data_lm_m$sex = as.factor(rep('male', nrow(data_lm_m)))
+data_lm = rbind(data_lm_f, data_lm_m)
+
+#Check data
+head(data_lm)
+```
+
+In this section we will create several regression models. The full results for regressions can be viewed in appendix and .rmd files.
+
+```{r}
+#| label: Full-regression
+#| echo: false
+
+lm_total_percent = lm(Percent ~ Class_all + State + sex, data = data_lm)
+
+lm_total_number = lm(Number ~ Class_all + State + sex, data = data_lm)
+
+```
+
+We can see that all the factors under 'State' is **not** statistically significant in this case, so we eliminate those variables in later models and try again, as we are expecting a more neat and clean result. The following variables are statistically significant in full models:
+
+1.  Factor(Class_all): Black or African American
+
+2.  Factor(Class_all): Hispanic or Latino of any race
+
+3.  Factor(Class_all): White
+
+```{r}
+#| label: Tidier-regression
+#| echo: false
+
+lm_race_percent = lm(Percent ~ Class_all + sex, data = data_lm)
+
+lm_race_number = lm(Number ~ Class_all + sex, data = data_lm)
+
+#stargazer(lm_race_percent, type = "text")
+
+#stargazer(lm_race_number, type = "text")
+
+```
+
+Afterwards, we conductJust the same as we expected, the R² of model using percentage as Y(around 0.7) is much greater than that of model using number(around 0.03), which means percentage is more useful in our study. The significant variables are totally the same as above.
+
+Also, gender factor is totally not significant. This is aligned with part of the conclusion we've drawn in last section.
+
+We guess the reason why some race factors and state factors are not significant in this model is that the number of values are much less than dimension. It's really disappointing that we are not able to fix this problem properly.
+
+## Part 4: Some Brief Conclusions
+
+This study examined the connection between absenteeism and various factors, such as gender, race, and region, using a data set of public school students. Our analysis focused on understanding which student groups are most affected by absenteeism and how these factors relate to absence rates.
+
+We identified several states where certain racial or ethnic groups face higher absenteeism rates, including South Dakota and North Dakota for Native Americans, and Louisiana and Maryland for Black or African American students.(Check Part 2 for full lists)
+
+By adjusting the data to account for racial population percentages of the whole US, we aimed to partly mitigate the impact of state racial structures on absenteeism patterns. Our findings in regression models show that the percentage of absenteeism as demonstrated by the higher R² value in models using percentages. Also, we found that gender factor does not significantly affect absenteeism, which aligns with our previous guess in Part 2 by those graphs.
+
+Despite these insights, our model’s limitations, such as the relatively small number of values compared to the model’s complexity, hindered the full potential of the analysis. More work on processing the data might help. For instance, gather more data sets on different years to solve this problem.
+
+Nevertheless, this study provides a foundation for understanding absenteeism patterns and highlights areas for future research.
+
+Thanks for reading!\newpage
+
+## Part 5: Appendix
+
+### Detailed Code chunks
+
+#### Preparation
+
+```{r}
+#| label: Package-loading-apdx
+
+#Load packages
+library(tidyr)
+library(dplyr)
+library(rvest)
+#install.packages("readxl")
+library(readxl)
+#install.packages("openxlsx") 
+library(openxlsx)
+library(ggplot2)
+#install.packages('stargazer')
+library(stargazer)
+```
+
+```{r}
+#| label: Data-loading-apdx
+
+#Read data from xlsx files
+raw_data_total = read_excel('chronic-absenteeism-1.xlsx', sheet = 'Total')
+raw_data_m = read_excel('chronic-absenteeism-1.xlsx', sheet = 'Male')
+raw_data_f = read_excel('chronic-absenteeism-1.xlsx', sheet = 'Female')
+```
+
+#### Data cleaning & functions
+
+```{r}
+#| label: Data-prep-function-apdx
+
+#Write a function for data preparation. There are three tables in the same format 
+#And it can be simply repeatedly used on both female and male tables.
+clean_data_function = function(x = raw_data_total){
+data_T = as.data.frame(t(x[1:56,2:25]))
+
+row.names(data_T) = c(1:nrow(data_T))
+
+#Set the column name for the dataframe
+data_T = data_T[,-1]
+data_T[1,3] = 'Data_sort'
+data_T[2,3] = 'Number'
+names(data_T) = data_T[1,] #Set the name as read and fixed above
+data_T = data_T[-1,] #Remove the repeated first row
+
+#Combine values in two columns
+for (i in 1:15) {
+  data_T[i,1] = data_T[i,2]
+}
+
+#Remove number of schools reporting and their percentage
+data_T = data_T[1:21,-2]
+
+names(data_T)[1] = 'Class_all' 
+data_T[1,1] = 'Total_student' #Fix missing values
+data_T = rbind(data_T[-1, ], data_T[1, ]) #Move the first total row to the last row
+
+rownames(data_T) = NULL #Reset index
+
+#Convert values from different state to different row
+#And move values from the same state to a row (percent and number)
+data_clean = data_T %>%
+  fill(Class_all, .direction = "down") %>%
+  pivot_longer(
+    cols = -c('Class_all','Data_sort'),
+    names_to = 'State',
+    values_to = 'Value'
+    ) %>%
+  pivot_wider(
+    names_from = 'Data_sort',
+    values_from = 'Value'
+  ) %>%
+  mutate(across(Percent, ~ifelse(is.na(.), 100, .)))
+
+#Remove the rows representing values other than the state
+data_clean = data_clean[data_clean$Class_all != 'Students With Disabilities Served Under IDEA' & data_clean$Class_all != 'Students With Disabilities Served Only Under Section 504' & data_clean$Class_all != 'English Language Learners',]
+return(data_clean)
+}
+
+```
+
+```{r}
+#| label: Data-application-apdx
+
+#Apply above function to three dataframes
+clean_total = clean_data_function(raw_data_total)
+clean_f = clean_data_function(raw_data_f)
+clean_m = clean_data_function(raw_data_m)
+
+#Write a function for data-type convertion for future regression
+mutate_fun = function(x = clean_total){
+  data_mttd = x %>%
+    mutate(across(c(Class_all, State), factor)) %>%
+    mutate(across(c(Number, Percent), as.numeric)) %>%
+    mutate(across(everything(), ~replace_na(., 0)))
+}
+
+#Apply above function to three cleaned dataframes
+clean_total = mutate_fun(clean_total)
+clean_f = mutate_fun(clean_f)
+clean_m = mutate_fun(clean_m)
+
+#Check dataframe by looking at first several rows
+#head(clean_total)
+#head(clean_f)
+#head(clean_m)
+
+```
+
+```{r}
+#| label: Data-storage-apdx
+
+#Save data for further checking or propbable future use
+#First create a new xlsx variable
+workbook = createWorkbook()
+
+#Then prepare respective sheets
+addWorksheet(workbook, "Total")
+writeData(workbook, sheet = "Total", clean_total)
+
+addWorksheet(workbook, "Female")
+writeData(workbook, sheet = "Female", clean_f)
+
+addWorksheet(workbook, "Male")
+writeData(workbook, sheet = "Male", clean_m)
+
+#Finally, overwrite. Now we can view cleaned data in MS office.
+saveWorkbook(workbook, "data_clean.xlsx", overwrite = TRUE)
+
+```
+
+#### Data visualization & functions
+
+```{r, fig.width=10, fig.height=7}
+#| label: Data-visualization-apdx
+
+#Input data manually for every population group into a dataset
+race_ratio = data.frame(
+  Race = unique(clean_total$Class_all)[1:7],
+  Percent = c(0.7, 5.9, 18.9, 12.6, 59.3, 0.2, 2.3)
+)
+
+data_US = clean_total[clean_total$State == 'United States',][1:7,]
+
+data_US$Percent_adj = data_US$Percent/race_ratio$Percent
+#The adjusted percentage greater than 1 means this group has bigger 
+#likelihood of absence, so we can get an overview
+
+#Draw a bar chart
+ggplot(data_US, aes(x = Class_all, y = Percent_adj, fill = Percent_adj > 1)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("dark green", "skyblue"), 
+                    labels = c("Less Likely to be absent", 
+                               "More Likely to be absent")) +  
+  labs(title = "How many times greater a student is likely to absent more than 15 days than average level",
+       x = "Races & Ethnicity", 
+       y = "% in total absent students/\n% in total population") +
+  geom_hline(yintercept = 1, linetype = "dotted", color = "black", linewidth = 0.5) +  
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.y = element_text(angle = 0, vjust = 0.5))
+#Asian has the lowest absent likelihood, then follows white people. 
+#All other groups of students are more likely to be absent.
+
+```
+
+```{r}
+#| label: Data-visualization-function-apdx
+#| echo: false
+
+#Now we are going to look into every single race group
+graph_fun = function(x = 'American Indian or Alaska Native', y = 10){
+#Filter to get the group we are about to analysis
+#Natives by default in this case
+  data_all = clean_total[clean_total$Class_all == x,]
+  data_f = clean_f[clean_total$Class_all == x,]
+  data_m = clean_m[clean_total$Class_all == x,]
+  
+#Fill in values for sex column for future plot drawing  
+  data_all$sex = rep('Total', nrow(data_all))
+  data_f$sex = rep('female', nrow(data_f))
+  data_m$sex = rep('male', nrow(data_m))
+  
+#Arrange datasets based on Percent, leave top 10 states
+#the number can also be altered by setting parameter y
+   data_all = data_all %>% 
+    arrange(desc(Percent)) %>%
+    slice_head(n = y)
+  data_f = data_f %>% 
+    arrange(desc(Percent)) %>%
+    slice_head(n = y)
+  data_m = data_m %>% 
+    arrange(desc(Percent)) %>%
+    slice_head(n = y)
+  
+#Combine those three datasets  
+  data = rbind(data_all, data_f, data_m)
+  
+#Set the sequence of top 10 states, or R will set them by the alphabet
+  data$State <- factor(data$State, levels = unique(data$State))
+
+#Draw the Bar chart using facet_wrap helper to put Total 
+#Female & Male data in one harmonic plot
+  plot = ggplot(data, aes(x = State, y = Percent, fill = sex)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ sex, scales = "free", nrow = 3) + 
+#The parameter 'scales' enable different different arrangement of x value
+  labs(title = paste("Top 10 states in Absent rate of", x),
+       x = "State",
+       y = "Absent Rate") +
+  scale_fill_brewer(palette = "Set3")
+
+#Return final value  
+  return(plot)
+}
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: Natives-apdx
+
+graph_fun(x = 'American Indian or\nAlaska Native')
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: Black or African American-apdx
+
+graph_fun(x = 'Black or African American')
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: Hispanic or Latino-apdx
+
+graph_fun(x = 'Hispanic or Latino of any race')
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: Asian-apdx
+
+graph_fun(x = 'Asian')
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: White-apdx
+
+graph_fun(x = 'White')
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: Pacific Islanders-apdx
+
+graph_fun(x = 'Native Hawaiian or Other Pacific Islander')
+
+```
+
+```{r, fig.width=12, fig.height=8}
+#| label: Two or More Races-apdx
+
+graph_fun(x = 'Two or more races')
+
+```
+
+#### Detailed regression code & results
+
+```{r}
+#| label: Regression-data-prep-apdx
+#| echo: false
+
+#Exclude the agg rows
+data_lm_f = clean_f[clean_f$Class_all != 'Total_student',]
+data_lm_m = clean_m[clean_m$Class_all != 'Total_student',]
+
+#Fill in 'sex' columns
+data_lm_f$sex = as.factor(rep('female', nrow(data_lm_f)))
+data_lm_m$sex = as.factor(rep('male', nrow(data_lm_m)))
+data_lm = rbind(data_lm_f, data_lm_m)
+
+#Check data
+head(data_lm)
+```
+
+```{r}
+#| label: Regression-full-results-apdx
+
+lm_total_percent = lm(Percent ~ Class_all + State + sex, data = data_lm)
+
+lm_total_number = lm(Number ~ Class_all + State + sex, data = data_lm)
+  
+stargazer(lm_total_percent, type = "text")
+
+stargazer(lm_total_number, type = "text")
+
+```
+
+```{r}
+#| label: Tidier-regression-results-apdx
+
+lm_race_percent = lm(Percent ~ Class_all + sex, data = data_lm)
+
+lm_race_number = lm(Number ~ Class_all + sex, data = data_lm)
+
+stargazer(lm_race_percent, type = "text")
+
+stargazer(lm_race_number, type = "text")
+
+```
